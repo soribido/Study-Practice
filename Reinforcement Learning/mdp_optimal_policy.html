@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MDP Optimal Policy & Value Iteration</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        #controls {
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            background-color: #45a049;
+        }
+        
+        button:active {
+            background-color: #3d8b40;
+        }
+        
+        #reset {
+            background-color: #f44336;
+        }
+        
+        #reset:hover {
+            background-color: #da190b;
+        }
+        
+        #info {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin: 10px 0;
+        }
+        
+        canvas {
+            border: 2px solid #333;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        #gamma-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        input[type="range"] {
+            width: 150px;
+        }
+        
+        .legend {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .legend-item {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <h1>MDP Optimal Policy & Value Iteration (Student MDP)</h1>
+    <div id="info">Iteration: 0 | γ = 1.00</div>
+    
+    <div id="controls">
+        <button id="next">Next Iteration</button>
+        <button id="iter10">+10 Iterations</button>
+        <button id="iter100">+100 Iterations</button>
+        <button id="reset">Reset</button>
+        <div id="gamma-control">
+            <label>γ:</label>
+            <input type="range" id="gamma" min="0" max="100" value="100" step="1">
+            <span id="gamma-value">1.00</span>
+        </div>
+    </div>
+    
+    <canvas id="canvas" width="1000" height="700"></canvas>
+    
+    <div class="legend">
+        <div class="legend-item"><strong>검은색 숫자:</strong> V*(s) - 최적 상태 가치</div>
+        <div class="legend-item"><strong>빨간색 화살표:</strong> π*(a|s) - 최적 정책 (최선의 행동)</div>
+        <div class="legend-item"><strong>빨간색 q*:</strong> Q*(s,a) - 최적 행동 가치</div>
+    </div>
+    
+    <script>
+        class MDPVisualizer {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.gamma = 1.0;
+                this.iteration = 0;
+                
+                // states
+                this.states = {
+                    'facebook_top': {pos: [150, 150], name: 'Facebook', terminal: false},
+                    'class1': {pos: [150, 450], name: 'Class1', terminal: false},
+                    'class2': {pos: [450, 450], name: 'Class2', terminal: false},
+                    'class3': {pos: [750, 450], name: 'Class3', terminal: false},
+                    'sleep': {pos: [500, 150], name: 'Sleep', terminal: true}
+                };
+                
+                // actions
+                this.actions = {
+                    'facebook_top': ['facebook_loop', 'quit'],
+                    'class1': ['facebook', 'study'],
+                    'class2': ['sleep', 'study'],
+                    'class3': ['study', 'pub'],
+                    'sleep': []  // terminal state
+                };
+                
+                // 전이 확률 및 보상: transitions[state][action] = [{next_state, prob, reward}]
+                this.transitions = {
+                    'facebook_top': {
+                        'facebook_loop': [{next: 'facebook_top', prob: 1.0, reward: -1}],
+                        'quit': [{next: 'class1', prob: 1.0, reward: 0}]
+                    },
+                    'class1': {
+                        'facebook': [{next: 'facebook_top', prob: 1.0, reward: -1}],
+                        'study': [{next: 'class2', prob: 1.0, reward: -2}]
+                    },
+                    'class2': {
+                        'sleep': [{next: 'sleep', prob: 1.0, reward: 0}],
+                        'study': [{next: 'class3', prob: 1.0, reward: -2}]
+                    },
+                    'class3': {
+                        'study': [{next: 'sleep', prob: 1.0, reward: 10}],
+                        'pub': [
+                            {next: 'class1', prob: 0.2, reward: 1},
+                            {next: 'class2', prob: 0.4, reward: 1},
+                            {next: 'class3', prob: 0.4, reward: 1}
+                        ]
+                    },
+                    'sleep': {}
+                };
+                
+                // V(s) - 상태 가치 함수
+                this.V = {};
+                // Q(s,a) - 행동 가치 함수
+                this.Q = {};
+                // π(s) - 최적 정책 (각 상태에서 최선의 행동)
+                this.policy = {};
+                
+                this.initializeValues();
+                this.setupEventListeners();
+                this.draw();
+            }
+            
+            initializeValues() {
+                for (let state in this.states) {
+                    this.V[state] = 0.0;
+                    this.Q[state] = {};
+                    for (let action of this.actions[state]) {
+                        this.Q[state][action] = 0.0;
+                    }
+                    this.policy[state] = this.actions[state][0] || null;
+                }
+            }
+            
+            setupEventListeners() {
+                document.getElementById('next').addEventListener('click', () => {
+                    this.valueIteration();
+                    this.draw();
+                });
+                
+                document.getElementById('iter10').addEventListener('click', () => {
+                    for (let i = 0; i < 10; i++) this.valueIteration();
+                    this.draw();
+                });
+                
+                document.getElementById('iter100').addEventListener('click', () => {
+                    for (let i = 0; i < 100; i++) this.valueIteration();
+                    this.draw();
+                });
+                
+                document.getElementById('reset').addEventListener('click', () => {
+                    this.reset();
+                });
+                
+                document.getElementById('gamma').addEventListener('input', (e) => {
+                    this.gamma = e.target.value / 100;
+                    document.getElementById('gamma-value').textContent = this.gamma.toFixed(2);
+                    this.reset();
+                });
+            }
+            
+            // Q(s,a) = Σ P(s'|s,a)[R(s,a,s') + γV(s')]
+            calculateQ(state, action) {
+                let q = 0.0;
+                const transitionList = this.transitions[state][action];
+                
+                for (let trans of transitionList) {
+                    q += trans.prob * (trans.reward + this.gamma * this.V[trans.next]);
+                }
+                
+                return q;
+            }
+            
+            valueIteration() {
+                let newV = {};
+                let newQ = {};
+                let newPolicy = {};
+                
+                for (let state in this.states) {
+                    if (this.states[state].terminal) {
+                        newV[state] = 0.0;
+                        newQ[state] = {};
+                        newPolicy[state] = null;
+                        continue;
+                    }
+                    
+                    newQ[state] = {};
+                    let maxQ = -Infinity;
+                    let bestAction = null;
+                    
+                    for (let action of this.actions[state]) {
+                        const qValue = this.calculateQ(state, action);
+                        newQ[state][action] = qValue;
+                        
+                        if (qValue > maxQ) {
+                            maxQ = qValue;
+                            bestAction = action;
+                        }
+                    }
+                    
+                    // V(s) = max_a Q(s,a)
+                    newV[state] = maxQ;
+                    newPolicy[state] = bestAction;
+                }
+                
+                this.V = newV;
+                this.Q = newQ;
+                this.policy = newPolicy;
+                this.iteration++;
+                
+                document.getElementById('info').textContent = 
+                    `Iteration: ${this.iteration} | γ = ${this.gamma.toFixed(2)}`;
+            }
+            
+            reset() {
+                this.iteration = 0;
+                this.initializeValues();
+                document.getElementById('info').textContent = 
+                    `Iteration: ${this.iteration} | γ = ${this.gamma.toFixed(2)}`;
+                this.draw();
+            }
+            
+            drawArrow(x1, y1, x2, y2, color = '#333', label = '', isOptimal = false) {
+                const ctx = this.ctx;
+                const headlen = 15;
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+                const angle = Math.atan2(dy, dx);
+                
+                ctx.strokeStyle = color;
+                ctx.lineWidth = isOptimal ? 4 : 2;
+                
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x2, y2);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(x2, y2);
+                ctx.lineTo(x2 - headlen * Math.cos(angle - Math.PI / 6), 
+                          y2 - headlen * Math.sin(angle - Math.PI / 6));
+                ctx.lineTo(x2 - headlen * Math.cos(angle + Math.PI / 6), 
+                          y2 - headlen * Math.sin(angle + Math.PI / 6));
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+                
+                if (label) {
+                    const midX = (x1 + x2) / 2;
+                    const midY = (y1 + y2) / 2;
+                    ctx.fillStyle = 'white';
+                    ctx.fillRect(midX - 25, midY - 12, 50, 24);
+                    ctx.fillStyle = color;
+                    ctx.font = isOptimal ? 'bold 12px Arial' : '11px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(label, midX, midY);
+                }
+            }
+            
+            drawSelfLoop(x, y, color = '#333', label = '', isOptimal = false) {
+                const ctx = this.ctx;
+                const radius = 35;
+                
+                ctx.strokeStyle = color;
+                ctx.lineWidth = isOptimal ? 4 : 2;
+                
+                ctx.beginPath();
+                ctx.arc(x, y - 50, radius, 0.2 * Math.PI, 0.8 * Math.PI);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(x - 28, y - 60);
+                ctx.lineTo(x - 22, y - 70);
+                ctx.lineTo(x - 32, y - 65);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+                
+                if (label) {
+                    ctx.fillStyle = color;
+                    ctx.font = isOptimal ? 'bold 12px Arial' : '11px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(label, x, y - 90);
+                }
+            }
+            
+            drawState(state, x, y) {
+                const ctx = this.ctx;
+                const radius = 40;
+                
+                if (this.states[state].terminal) {
+                    ctx.fillStyle = '#e0e0e0';
+                    ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(x - radius, y - radius, radius * 2, radius * 2);
+                } else {
+                    ctx.beginPath();
+                    ctx.arc(x, y, radius, 0, 2 * Math.PI);
+                    ctx.fillStyle = '#add8e6';
+                    ctx.fill();
+                    ctx.strokeStyle = '#333';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                }
+                
+                ctx.fillStyle = '#000';
+                ctx.font = 'bold 18px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(this.V[state].toFixed(1), x, y);
+                
+                ctx.font = 'bold 14px Arial';
+                ctx.fillText(this.states[state].name, x, y - 60);
+            }
+            
+            drawDecisionNode(x, y) {
+                const ctx = this.ctx;
+                ctx.beginPath();
+                ctx.arc(x, y, 8, 0, 2 * Math.PI);
+                ctx.fillStyle = '#000';
+                ctx.fill();
+            }
+            
+            drawTransitions() {
+                const ctx = this.ctx;
+                const c1_pos = this.states['class1'].pos;
+                const c2_pos = this.states['class2'].pos;
+                const c3_pos = this.states['class3'].pos;
+                const fb_top_pos = this.states['facebook_top'].pos;
+                const sleep_pos = this.states['sleep'].pos;
+                const offset = 45;
+                
+                // Facebook top self-loop
+                const isOptimalFBLoop = this.policy['facebook_top'] === 'facebook_loop';
+                this.drawSelfLoop(fb_top_pos[0], fb_top_pos[1], 
+                    isOptimalFBLoop ? 'red' : '#666', 
+                    `FB: R=-1, q*=${this.Q['facebook_top']['facebook_loop'].toFixed(1)}`,
+                    isOptimalFBLoop);
+                
+                // Facebook top -> Class1 (Quit)
+                const isOptimalQuit = this.policy['facebook_top'] === 'quit';
+                this.drawArrow(
+                    fb_top_pos[0], fb_top_pos[1] + offset,
+                    c1_pos[0], c1_pos[1] - offset,
+                    isOptimalQuit ? 'red' : '#666',
+                    `Quit: R=0, q*=${this.Q['facebook_top']['quit'].toFixed(1)}`,
+                    isOptimalQuit
+                );
+                
+                // Class1 -> Facebook top
+                const isOptimalC1FB = this.policy['class1'] === 'facebook';
+                this.drawArrow(
+                    c1_pos[0] + 30, c1_pos[1] - 30,
+                    fb_top_pos[0] + 30, fb_top_pos[1] + 30,
+                    isOptimalC1FB ? 'red' : '#666',
+                    `FB: R=-1, q*=${this.Q['class1']['facebook'].toFixed(1)}`,
+                    isOptimalC1FB
+                );
+                
+                // Class1 -> Class2 (Study)
+                const isOptimalC1Study = this.policy['class1'] === 'study';
+                this.drawArrow(
+                    c1_pos[0] + offset, c1_pos[1],
+                    c2_pos[0] - offset, c2_pos[1],
+                    isOptimalC1Study ? 'red' : '#666',
+                    `Study: R=-2, q*=${this.Q['class1']['study'].toFixed(1)}`,
+                    isOptimalC1Study
+                );
+                
+                // Class2 -> Sleep
+                const isOptimalC2Sleep = this.policy['class2'] === 'sleep';
+                this.drawArrow(
+                    c2_pos[0] + 30, c2_pos[1] - 30,
+                    sleep_pos[0] - 30, sleep_pos[1] + 30,
+                    isOptimalC2Sleep ? 'red' : '#666',
+                    `Sleep: R=0, q*=${this.Q['class2']['sleep'].toFixed(1)}`,
+                    isOptimalC2Sleep
+                );
+                
+                // Class2 -> Class3 (Study)
+                const isOptimalC2Study = this.policy['class2'] === 'study';
+                this.drawArrow(
+                    c2_pos[0] + offset, c2_pos[1],
+                    c3_pos[0] - offset, c3_pos[1],
+                    isOptimalC2Study ? 'red' : '#666',
+                    `Study: R=-2, q*=${this.Q['class2']['study'].toFixed(1)}`,
+                    isOptimalC2Study
+                );
+                
+                // Class3 -> Sleep (Study)
+                const isOptimalC3Study = this.policy['class3'] === 'study';
+                this.drawArrow(
+                    c3_pos[0] + 30, c3_pos[1] - 30,
+                    sleep_pos[0] + 30, sleep_pos[1] + 30,
+                    isOptimalC3Study ? 'red' : '#666',
+                    `Study: R=10, q*=${this.Q['class3']['study'].toFixed(1)}`,
+                    isOptimalC3Study
+                );
+                
+                // Class3 -> Pub 
+                const isOptimalC3Pub = this.policy['class3'] === 'pub';
+                const pubColor = isOptimalC3Pub ? 'red' : '#666';
+                
+                const pubNode = [450, 580];
+                
+                // Class3 -> Pub Node
+                this.drawArrow(
+                    c3_pos[0] - 30, c3_pos[1] + 30,
+                    pubNode[0] + 6, pubNode[1] - 6,
+                    pubColor,
+                    '',
+                    isOptimalC3Pub
+                );
+                
+                // Pub Decision Node
+                this.drawDecisionNode(pubNode[0], pubNode[1]);
+                
+                // Pub Node -> Class1 (0.2)
+                this.drawArrow(
+                    pubNode[0] - 8, pubNode[1],
+                    c1_pos[0] + 20, c1_pos[1] + 40,
+                    '#333',
+                    '0.2',
+                    false
+                );
+                
+                // Pub Node -> Class2 (0.4)
+                this.drawArrow(
+                    pubNode[0], pubNode[1] + 8,
+                    c2_pos[0], c2_pos[1] + 40,
+                    '#333',
+                    '0.4',
+                    false
+                );
+                
+                // Pub Node -> Class3 (0.4)
+                this.drawArrow(
+                    pubNode[0] + 8, pubNode[1],
+                    c3_pos[0] - 20, c3_pos[1] + 40,
+                    '#333',
+                    '0.4',
+                    false
+                );
+                
+                // Pub Q value
+                ctx.fillStyle = pubColor;
+                ctx.font = isOptimalC3Pub ? 'bold 12px Arial' : '11px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`Pub: R=1, q*=${this.Q['class3']['pub'].toFixed(1)}`, 
+                    pubNode[0] + 100, pubNode[1] - 10);
+            }
+            
+            draw() {
+                const ctx = this.ctx;
+                ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                this.drawTransitions();
+                
+                for (let state in this.states) {
+                    const [x, y] = this.states[state].pos;
+                    this.drawState(state, x, y);
+                }
+            }
+        }
+        
+        window.onload = () => {
+            new MDPVisualizer();
+        };
+    </script>
+</body>
+</html>
